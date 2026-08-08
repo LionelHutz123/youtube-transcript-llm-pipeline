@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials*.json
+service-account*.json
+
+# Generated transcripts and LLM artifacts
+data/*
+!data/.gitkeep
+output/
+outputs/
+transcripts/
+*.jsonl
+*.sqlite
+*.sqlite3
+*.db
+*.log
+
+# Editors and operating systems
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
