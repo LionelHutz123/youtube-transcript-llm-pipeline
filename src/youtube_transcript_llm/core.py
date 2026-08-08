@@ -8,6 +8,9 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from youtube_transcript_api import YouTubeTranscriptApi
 
 VIDEO_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{11}$")
@@ -20,6 +23,36 @@ YOUTUBE_HOSTS = {
     "www.youtube-nocookie.com",
     "youtu.be",
 }
+
+
+class _TimeoutSession(requests.Session):
+    """Requests session with a default timeout for upstream YouTube calls."""
+
+    def __init__(self, timeout: float) -> None:
+        super().__init__()
+        self._default_timeout = timeout
+
+    def request(self, method: str, url: str, **kwargs: Any) -> requests.Response:
+        kwargs.setdefault("timeout", self._default_timeout)
+        return super().request(method, url, **kwargs)
+
+
+def _build_http_session(*, timeout: float, max_retries: int) -> requests.Session:
+    retry = Retry(
+        total=max_retries,
+        connect=max_retries,
+        read=max_retries,
+        status=max_retries,
+        backoff_factor=0.5,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=frozenset({"GET"}),
+        raise_on_status=False,
+    )
+    session = _TimeoutSession(timeout)
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
 
 
 @dataclass(frozen=True)
@@ -57,7 +90,10 @@ def extract_video_id(video: str) -> str:
     if VIDEO_ID_PATTERN.fullmatch(value):
         return value
 
-    candidate = value if "://" in value else f"https://{value}"
+    if value.startswith("//"):
+        candidate = f"https:{value}"
+    else:
+        candidate = value if "://" in value else f"https://{value}"
     parsed = urlparse(candidate)
     host = (parsed.hostname or "").lower()
     if host not in YOUTUBE_HOSTS:
@@ -70,7 +106,7 @@ def extract_video_id(video: str) -> str:
         possible_id = path_parts[0]
     elif parsed.path.rstrip("/") == "/watch":
         possible_id = parse_qs(parsed.query).get("v", [None])[0]
-    elif len(path_parts) >= 2 and path_parts[0] in {"embed", "live", "shorts"}:
+    elif len(path_parts) >= 2 and path_parts[0] in {"embed", "live", "shorts", "v"}:
         possible_id = path_parts[1]
 
     if possible_id and VIDEO_ID_PATTERN.fullmatch(possible_id):
@@ -85,16 +121,36 @@ def fetch_transcript(
     *,
     preserve_formatting: bool = False,
     api: Any | None = None,
+    request_timeout: float = 20.0,
+    max_retries: int = 2,
 ) -> TranscriptDocument:
     """Fetch and normalize captions for one YouTube video."""
 
     video_id = extract_video_id(video)
-    client = api or YouTubeTranscriptApi()
-    fetched = client.fetch(
-        video_id,
-        languages=list(languages),
-        preserve_formatting=preserve_formatting,
-    )
+    selected_languages = list(languages)
+    if not selected_languages:
+        raise ValueError("languages must contain at least one language code")
+    if request_timeout <= 0:
+        raise ValueError("request_timeout must be greater than zero")
+    if max_retries < 0:
+        raise ValueError("max_retries must be non-negative")
+
+    owned_session: requests.Session | None = None
+    if api is None:
+        owned_session = _build_http_session(timeout=request_timeout, max_retries=max_retries)
+        client = YouTubeTranscriptApi(http_client=owned_session)
+    else:
+        client = api
+
+    try:
+        fetched = client.fetch(
+            video_id,
+            languages=selected_languages,
+            preserve_formatting=preserve_formatting,
+        )
+    finally:
+        if owned_session is not None:
+            owned_session.close()
 
     segments = tuple(
         TranscriptSegment(

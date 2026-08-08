@@ -20,7 +20,7 @@ Write provider-neutral JSONL
 Summarize, classify, embed, search, or add to RAG
 ```
 
-This project collects captions that are already available for a video. It does **not** download the video or audio, and it does not require a YouTube Data API key.
+This project collects captions that are already available for a video. It does **not** download the video or audio. Fetching a known video's transcript does not require an API key. Optional keyword or channel discovery uses the official YouTube Data API and requires a `YOUTUBE_API_KEY`.
 
 ## Why this exists
 
@@ -28,22 +28,27 @@ LLMs work with text, not a YouTube watch page. Before a model can summarize a vi
 
 This tool handles that ingestion boundary. It accepts common YouTube URL formats, fetches captions, retains useful source metadata, and creates chunks that can be passed to nearly any downstream AI system.
 
+For organizational adoption, Google Cloud ownership, API-key security, verified live test data, quota planning, compliance considerations, and production architecture, see the [Business Implementation Guide](docs/BUSINESS_IMPLEMENTATION_GUIDE.md).
+
 ## Features
 
 - Accepts normal watch URLs, `youtu.be` links, Shorts, embeds, live URLs, or raw video IDs.
+- Can discover videos by keyword, channel, date, and result order through the official YouTube Data API.
 - Supports language preference order such as English first and Spanish second.
 - Works with manually authored and auto-generated captions when YouTube exposes them.
 - Preserves start and end timestamps for citation and playback links.
 - Produces newline-delimited JSON: one independently processable chunk per line.
 - Adds configurable overlap so context is not abruptly lost between chunks.
-- Has no LLM-provider dependency and requires no API key.
+- Has no LLM-provider dependency; transcript retrieval requires no API key.
+- Adds bounded network timeouts and retries for transient transcript failures.
+- Writes overwrite-mode JSONL atomically so interrupted runs do not leave partial files.
 - Includes tests, linting, and modern Python packaging metadata.
 
 ## Quick start
 
 ### 1. Install
 
-Python 3.9 or newer is required.
+Python 3.11 or newer is required. Python 3.12 is recommended. Avoid Apple's legacy system Python, which is currently Python 3.9 with an obsolete LibreSSL build.
 
 ```bash
 git clone https://github.com/LionelHutz123/youtube-transcript-llm-pipeline.git
@@ -64,10 +69,11 @@ Activate the environment:
 source .venv/bin/activate
 ```
 
-Install the command:
+Upgrade the environment's packaging tools, then install the command:
 
 ```bash
-python -m pip install -e .
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install .
 ```
 
 ### 2. Fetch a transcript
@@ -90,10 +96,39 @@ yt-transcript \
 
 On Windows PowerShell, use a backtick (`` ` ``) instead of `\` for multiline commands, or place the command on one line.
 
+### 4. Discover videos and fetch their transcripts
+
+Discovery is separate from transcript retrieval. Create a Google Cloud project, enable YouTube Data API v3, and place its API key in an environment variable:
+
+```bash
+export YOUTUBE_API_KEY="your-api-key"
+```
+
+```powershell
+$env:YOUTUBE_API_KEY = "your-api-key"
+```
+
+Then search YouTube and process the discovered videos in one command:
+
+```bash
+yt-transcript \
+  --search "retrieval augmented generation tutorial" \
+  --search-limit 3 \
+  --published-after 2025-01-01T00:00:00Z \
+  --output data/rag-videos.jsonl
+```
+
+Use `--channel-id CHANNEL_ID` to restrict discovery to one channel. Search results add `title`, `channel_id`, `channel_title`, `published_at`, and `discovery_query` to each transcript chunk.
+
 ## Command reference
 
 ```text
-yt-transcript VIDEO [VIDEO ...]
+yt-transcript [VIDEO ...]
+  --search QUERY                 Discover videos, then fetch their transcripts
+  --search-limit NUMBER          Maximum search results, from 1 to 50
+  --search-order ORDER           relevance, date, rating, title, or viewCount
+  --channel-id CHANNEL_ID        Restrict search to one channel
+  --published-after RFC3339      Restrict search by publication timestamp
   --languages CODE [CODE ...]   Preferred languages in priority order
   --output PATH                 JSONL destination
   --max-chars NUMBER            Approximate maximum characters per chunk
@@ -114,6 +149,9 @@ yt-transcript VIDEO_ID --max-chars 3000 --overlap-chars 300
 # Build a corpus over multiple runs
 yt-transcript VIDEO_ID_1 --output data/corpus.jsonl
 yt-transcript VIDEO_ID_2 --output data/corpus.jsonl --append
+
+# Combine a known video with discovered results; duplicate IDs are removed
+yt-transcript VIDEO_ID --search "local LLM tutorial" --search-limit 5
 ```
 
 ## Output format
@@ -156,10 +194,10 @@ records = [
 for record in records:
     prompt = f"""
     Summarize this section of a YouTube transcript.
-    Source: {record['source_url']}
-    Time range: {record['start_seconds']}–{record['end_seconds']} seconds
+    Source: {record["source_url"]}
+    Time range: {record["start_seconds"]}–{record["end_seconds"]} seconds
 
-    {record['text']}
+    {record["text"]}
     """
     # Send `prompt` to the LLM client of your choice.
 ```
@@ -176,7 +214,7 @@ Common next steps include:
 ## Use as a Python library
 
 ```python
-from youtube_transcript_llm import chunk_transcript, fetch_transcript
+from youtube_transcript_llm import chunk_transcript, fetch_transcript, search_videos
 
 document = fetch_transcript(
     "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
@@ -187,28 +225,61 @@ records = chunk_transcript(document, max_chars=6000, overlap_chars=500)
 print(records[0]["text"])
 ```
 
+Programmatically discover videos and feed their IDs into the same retrieval path:
+
+```python
+import os
+
+from youtube_transcript_llm import chunk_transcript, fetch_transcript, search_videos
+
+matches = search_videos(
+    "retrieval augmented generation tutorial",
+    api_key=os.environ["YOUTUBE_API_KEY"],
+    max_results=5,
+    order="date",
+)
+
+for match in matches:
+    try:
+        document = fetch_transcript(match.video_id, languages=["en", "es"])
+    except Exception as exc:
+        # A discovered video may be private, blocked, or have no matching captions.
+        print(f"Skipping {match.video_id}: {exc}")
+        continue
+
+    for record in chunk_transcript(document):
+        print(match.title, record["start_seconds"], record["text"][:80])
+```
+
+Keep the discovery metadata alongside the transcript records in a real application. A search result only proves that a video exists; caption availability is a separate property and must be checked per video.
+
 ## Development
 
 Install development tools and run the checks:
 
 ```bash
-python -m pip install -e ".[dev]"
+python -m pip install ".[dev]"
 ruff check .
 pytest
 ```
 
-The test suite does not make live YouTube requests. It tests URL parsing, transcript normalization, metadata, chunk boundaries, and overlap deterministically.
+The test suite does not make live YouTube requests. It tests URL parsing, transcript normalization, discovery responses and failures, CLI output safety, metadata, chunk boundaries, and overlap deterministically.
 
 ## Project structure
 
 ```text
 .
+├── .env.example
+├── .github/workflows/ci.yml
+├── CHANGELOG.md
 ├── data/
+├── docs/BUSINESS_IMPLEMENTATION_GUIDE.md
 ├── src/youtube_transcript_llm/
 │   ├── __init__.py
 │   ├── cli.py
-│   └── core.py
-├── tests/test_core.py
+│   ├── core.py
+│   └── discovery.py
+├── tests/
 ├── pyproject.toml
 └── README.md
 ```
@@ -218,7 +289,8 @@ The test suite does not make live YouTube requests. It tests URL parsing, transc
 - A video must expose captions or a transcript. This project does not perform speech-to-text on videos without captions.
 - Private, deleted, region-locked, and some age-restricted videos may be unavailable.
 - YouTube can rate-limit or block automated transcript requests, especially from cloud-provider IP addresses.
-- Playlist and channel discovery are outside the current scope; supply the individual video URLs or IDs.
+- Generic video discovery requires a YouTube Data API v3 key and consumes Google API quota. Direct transcript retrieval remains keyless.
+- Playlist enumeration and exhaustive channel-upload enumeration are outside the current scope. Search can be restricted to a channel, but it is still a relevance/date-based search.
 - The underlying library uses an undocumented YouTube web endpoint, so upstream changes can temporarily break retrieval.
 
 ## Responsible use

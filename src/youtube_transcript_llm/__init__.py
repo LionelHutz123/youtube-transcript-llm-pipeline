@@ -7,6 +7,7 @@ from .core import (
     extract_video_id,
     fetch_transcript,
 )
+from .discovery import VideoDiscoveryError, VideoSearchResult, search_videos
 
 __all__ = [
     "TranscriptDocument",
@@ -14,6 +15,9 @@ __all__ = [
     "chunk_transcript",
     "extract_video_id",
     "fetch_transcript",
+    "VideoDiscoveryError",
+    "VideoSearchResult",
+    "search_videos",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

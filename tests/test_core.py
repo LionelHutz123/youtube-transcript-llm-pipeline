@@ -23,7 +23,10 @@ VIDEO_ID = "dQw4w9WgXcQ"
         f"https://youtu.be/{VIDEO_ID}?si=example",
         f"https://www.youtube.com/shorts/{VIDEO_ID}",
         f"https://www.youtube.com/embed/{VIDEO_ID}",
+        f"https://www.youtube.com/v/{VIDEO_ID}",
+        f"https://www.youtube-nocookie.com/embed/{VIDEO_ID}",
         f"youtube.com/live/{VIDEO_ID}",
+        f"//youtu.be/{VIDEO_ID}",
     ],
 )
 def test_extract_video_id(value: str) -> None:
@@ -93,3 +96,12 @@ def test_fetch_transcript_normalizes_api_response() -> None:
     document = fetch_transcript(VIDEO_ID, api=FakeApi())
     assert document.video_id == VIDEO_ID
     assert document.segments == (TranscriptSegment("hello", 0.0, 1.5),)
+
+
+def test_fetch_transcript_validates_network_options() -> None:
+    with pytest.raises(ValueError, match="languages"):
+        fetch_transcript(VIDEO_ID, languages=(), api=FakeApi())
+    with pytest.raises(ValueError, match="request_timeout"):
+        fetch_transcript(VIDEO_ID, request_timeout=0, api=FakeApi())
+    with pytest.raises(ValueError, match="max_retries"):
+        fetch_transcript(VIDEO_ID, max_retries=-1, api=FakeApi())
