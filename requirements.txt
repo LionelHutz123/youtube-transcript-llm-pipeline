@@ -1,3 +1,5 @@
+# Remove trust in compromised emSign intermediates.
+certifi>=2026.10.19
 requests>=2.32,<3
 urllib3>=2,<3
 youtube-transcript-api==1.2.4
